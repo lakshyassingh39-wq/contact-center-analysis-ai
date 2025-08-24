@@ -1,0 +1,297 @@
+{
+  "info": {
+    "name": "OMIND.AI Contact Center API",
+    "description": "API collection for OMIND.AI Contact Center Analysis Platform",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "auth": {
+    "type": "bearer",
+    "bearer": [
+      {
+        "key": "token",
+        "value": "{{auth_token}}",
+        "type": "string"
+      }
+    ]
+  },
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          ""
+        ]
+      }
+    }
+  ],
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://localhost:5000/api",
+      "type": "string"
+    },
+    {
+      "key": "auth_token",
+      "value": "",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "Authentication",
+      "item": [
+        {
+          "name": "Demo Login",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 200) {",
+                  "    const response = pm.response.json();",
+                  "    pm.collectionVariables.set('auth_token', response.token);",
+                  "    pm.test('Demo login successful', function () {",
+                  "        pm.expect(response.success).to.be.true;",
+                  "        pm.expect(response.token).to.be.a('string');",
+                  "    });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/auth/demo-login",
+              "host": ["{{base_url}}"],
+              "path": ["auth", "demo-login"]
+            }
+          }
+        },
+        {
+          "name": "Login",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 200) {",
+                  "    const response = pm.response.json();",
+                  "    pm.collectionVariables.set('auth_token', response.token);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"demo@omind.ai\",\n  \"password\": \"password\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/auth/login",
+              "host": ["{{base_url}}"],
+              "path": ["auth", "login"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Calls",
+      "item": [
+        {
+          "name": "Upload Call Recording",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "audio",
+                  "type": "file",
+                  "src": []
+                },
+                {
+                  "key": "metadata",
+                  "value": "{\"customerInfo\": \"John Doe\", \"agentInfo\": \"Agent Smith\", \"callType\": \"inbound\"}",
+                  "type": "text"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{base_url}}/calls/upload",
+              "host": ["{{base_url}}"],
+              "path": ["calls", "upload"]
+            }
+          }
+        },
+        {
+          "name": "Get All Calls",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/calls",
+              "host": ["{{base_url}}"],
+              "path": ["calls"]
+            }
+          }
+        },
+        {
+          "name": "Get Call by ID",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/calls/{{call_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["calls", "{{call_id}}"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Analysis",
+      "item": [
+        {
+          "name": "Transcribe Call",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/analysis/transcribe/{{call_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["analysis", "transcribe", "{{call_id}}"]
+            }
+          }
+        },
+        {
+          "name": "Analyze Call Quality",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/analysis/analyze/{{call_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["analysis", "analyze", "{{call_id}}"]
+            }
+          }
+        },
+        {
+          "name": "Get Analysis Results",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/analysis/{{call_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["analysis", "{{call_id}}"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Coaching",
+      "item": [
+        {
+          "name": "Generate Coaching Plan",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/coaching/generate/{{call_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["coaching", "generate", "{{call_id}}"]
+            }
+          }
+        },
+        {
+          "name": "Get Coaching Plan",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/coaching/{{call_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["coaching", "{{call_id}}"]
+            }
+          }
+        },
+        {
+          "name": "Update Progress",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"type\": \"article\",\n  \"resourceId\": \"article-1\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/coaching/{{call_id}}/progress",
+              "host": ["{{base_url}}"],
+              "path": ["coaching", "{{call_id}}", "progress"]
+            }
+          }
+        },
+        {
+          "name": "Submit Quiz",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"answers\": [\n    {\n      \"questionId\": \"q1\",\n      \"answer\": \"Option A\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/coaching/{{call_id}}/quiz",
+              "host": ["{{base_url}}"],
+              "path": ["coaching", "{{call_id}}", "quiz"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Health Check",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{base_url}}/../health",
+          "host": ["{{base_url}}"],
+          "path": ["..", "health"]
+        }
+      }
+    }
+  ]
+}
