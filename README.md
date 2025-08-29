@@ -157,7 +157,7 @@ mongod
 The platform includes comprehensive sample data for immediate testing:
 
 ### Included Sample Files
-- **Audio Files**: `sample-data/calls/excellent-customer-service.mp3`
+- **Audio Files**: `sample-data/calls/sample_audio.mp3`
 
 ### Demo Workflow
 1. Login with demo credentials: `demo@omind.ai` / `password`
