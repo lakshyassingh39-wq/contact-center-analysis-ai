@@ -2,52 +2,17 @@ const axios = require('axios');
 const FormData = require('form-data');
 const fs = require('fs');
 
-/**
- * AI Service supporting multiple providers:
- * - OpenAI (if API key available)
- * - Huggi  async coachingWithHuggingFace(analysis) {
-    try {
-      const prompt = this.getCoachingPrompt(analysis);
-      
-      // Use specialized instruction-following models for coaching recommendations
-      const models = [
-        'mistralai/Mistral-7B-Instruct-v0.1',
-        'microsoft/DialoGPT-large',
-        'google/flan-t5-large'
-      ];
-      
-      for (const model of models) {
-        try {
-          const response = await this.client.post(`/models/${model}`, {
-            inputs: prompt,
-            parameters: {
-              max_new_tokens: 800,
-              temperature: 0.2,
-              do_sample: true,
-              return_full_text: false
-            }
-          });
+// Try to load the Hugging Face JS Inference client (optional)
+let InferenceClient = null;
+try {
+  const hfPkg = require('@huggingface/inference');
+  // Package exports may be the client directly or under InferenceClient
+  InferenceClient = hfPkg.InferenceClient || hfPkg;
+} catch (e) {
+  // Not installed — will fall back to REST calls
+  InferenceClient = null;
+}
 
-          if (response.data && response.data[0]?.generated_text) {
-            return this.parseHuggingFaceCoaching(response.data[0].generated_text);
-          }
-        } catch (modelError) {
-          console.warn(`Coaching model ${model} failed, trying next...`);
-          continue;
-        }
-      }
-      
-      // Fallback to structured mock coaching data
-      return this.parseHuggingFaceCoaching("Coaching recommendations generated using open-source AI");
-      
-    } catch (error) {
-      console.warn('HuggingFace coaching failed, using mock data:', error.message);
-      return await this.mockCoaching(analysis);
-    }
-  } tier available)
- * - Ollama (local models)
- * - Mock responses (for development)
- */
 class AIService {
   constructor() {
     this.provider = this.detectProvider();
@@ -75,8 +40,25 @@ class AIService {
             'Content-Type': 'application/json'
           }
         });
+
+        // Instantiate the official HF JS client if available
+        if (InferenceClient) {
+          try {
+            try {
+              this.hfClient = new InferenceClient({ apiKey: process.env.HUGGINGFACE_API_KEY });
+            } catch (err) {
+              // Fallback to token-only constructor
+              this.hfClient = new InferenceClient(process.env.HUGGINGFACE_API_KEY);
+            }
+          } catch (err) {
+            console.warn('Failed to initialize @huggingface/inference client, falling back to HTTP API:', err.message);
+            this.hfClient = null;
+          }
+        } else {
+          this.hfClient = null;
+        }
         break;
-      
+
       case 'ollama':
         const ollamaUrl = process.env.OLLAMA_URL || process.env.OLLAMA_HOST || 'http://localhost:11434';
         this.client = axios.create({
@@ -86,29 +68,26 @@ class AIService {
           }
         });
         break;
-      
+
       case 'mock':
         this.client = null;
         break;
     }
-    
+
     console.log(`🤖 AI Service initialized with open-source provider: ${this.provider}`);
   }
 
   async transcribeAudio(audioPath) {
     console.log(`🎙️ Transcribing audio with ${this.provider} provider...`);
-    
+
     try {
       switch (this.provider) {
         case 'huggingface':
           return await this.transcribeWithHuggingFace(audioPath);
-        
-        case 'ollama':
-          return await this.transcribeWithOllama(audioPath);
-        
+
         case 'mock':
           return await this.mockTranscription(audioPath);
-        
+
         default:
           throw new Error(`Unsupported provider: ${this.provider}`);
       }
@@ -120,18 +99,18 @@ class AIService {
 
   async analyzeCall(transcript) {
     console.log(`🧠 Analyzing call with ${this.provider} provider...`);
-    
+
     try {
       switch (this.provider) {
         case 'huggingface':
           return await this.analyzeWithHuggingFace(transcript);
-        
+
         case 'ollama':
           return await this.analyzeWithOllama(transcript);
-        
+
         case 'mock':
           return await this.mockAnalysis(transcript);
-        
+
         default:
           throw new Error(`Unsupported provider: ${this.provider}`);
       }
@@ -143,18 +122,18 @@ class AIService {
 
   async generateCoaching(analysis) {
     console.log(`👨‍🏫 Generating coaching with ${this.provider} provider...`);
-    
+
     try {
       switch (this.provider) {
         case 'huggingface':
           return await this.coachingWithHuggingFace(analysis);
-        
+
         case 'ollama':
           return await this.coachingWithOllama(analysis);
-        
+
         case 'mock':
           return await this.generateDetailedCoaching(analysis);
-        
+
         default:
           throw new Error(`Unsupported provider: ${this.provider}`);
       }
@@ -165,23 +144,96 @@ class AIService {
   }
 
   // Hugging Face Implementation
+  async hfRequest(model, payload, options = {}) {
+    // options: { isBinary: boolean, headers: {}, maxRetries: number }
+    const isBinary = options.isBinary || false;
+    const headers = Object.assign({}, this.client.defaults.headers.common, options.headers || {});
+    const maxRetries = options.maxRetries || 4;
+
+    const url = `/models/${encodeURIComponent(model)}`;
+
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      try {
+        const resp = await this.client.post(url, payload, {
+          headers,
+          responseType: 'json',
+          timeout: 120000
+        });
+
+        // Hugging Face may return { error: "Model is loading" } or 503
+        if (resp?.data?.error) {
+          const errMsg = resp.data.error || JSON.stringify(resp.data);
+          // If model loading, wait and retry
+          if (/loading|loading model|Model is loading/i.test(errMsg) && attempt < maxRetries) {
+            const waitMs = 2000 * Math.pow(2, attempt); // exponential backoff
+            console.log(`🕒 Model ${model} loading, retrying in ${waitMs}ms (attempt ${attempt + 1})`);
+            await this.simulateDelay(waitMs);
+            continue;
+          }
+          throw new Error(`HuggingFace error: ${errMsg}`);
+        }
+
+        return resp.data;
+      } catch (err) {
+        const status = err.response?.status;
+        if ((status === 503 || status === 429) && attempt < maxRetries) {
+          const waitMs = 2000 * Math.pow(2, attempt);
+          console.log(`🕒 HF API returned ${status}, retrying in ${waitMs}ms (attempt ${attempt + 1})`);
+          await this.simulateDelay(waitMs);
+          continue;
+        }
+
+        if (attempt === maxRetries) throw err;
+        await this.simulateDelay(1000);
+      }
+    }
+
+    throw new Error('HuggingFace request failed after retries');
+  }
+
   async transcribeWithHuggingFace(audioPath) {
     try {
-      // Using Whisper models on HuggingFace (open-source alternative to OpenAI Whisper)
       const audioBuffer = fs.readFileSync(audioPath);
-      
-      const response = await this.client.post('/models/openai/whisper-large-v3', audioBuffer, {
-        headers: {
-          'Authorization': `Bearer ${process.env.HUGGINGFACE_API_KEY}`,
-          'Content-Type': 'audio/wav'
-        }
-      });
+      const model = process.env.HF_WHISPER_MODEL || 'openai/whisper-large-v3';
 
-      return {
-        text: response.data.text || 'Transcription completed via open-source Whisper model',
-        confidence: 0.88,
-        provider: 'huggingface-whisper'
+      // Prefer official HF JS client when available (handles binary uploads)
+      if (this.hfClient && typeof this.hfClient.automaticSpeechRecognition === 'function') {
+        try {
+          const output = await this.hfClient.automaticSpeechRecognition({
+            data: audioBuffer,
+            model: model,
+          });
+
+          const text = output?.text || output?.transcription || output?.data || (Array.isArray(output) && output[0]?.text);
+          if (text) {
+            return { text, confidence: output?.confidence || 0.9, provider: `huggingface:${model}` };
+          }
+
+          console.warn('HF client transcription returned unexpected shape:', output);
+        } catch (err) {
+          console.warn('HF client transcription error, falling back to HTTP API:', err.message);
+        }
+      }
+
+      // Fallback: use HTTP inference API via hfRequest
+      const headers = {
+        'Authorization': `Bearer ${process.env.HUGGINGFACE_API_KEY}`,
+        'Content-Type': 'audio/wav'
       };
+
+      const data = await this.hfRequest(model, audioBuffer, { isBinary: true, headers, maxRetries: 5 });
+
+      let text = null;
+      if (typeof data === 'string') text = data;
+      else if (data?.text) text = data.text;
+      else if (Array.isArray(data) && data[0]?.text) text = data[0].text;
+
+      if (!text) {
+        console.warn('Unexpected HF transcription response:', data);
+        return await this.mockTranscription(audioPath);
+      }
+
+      return { text, confidence: 0.9, provider: `huggingface:${model}` };
     } catch (error) {
       console.warn('HuggingFace transcription failed, using mock data:', error.message);
       return await this.mockTranscription(audioPath);
@@ -190,39 +242,43 @@ class AIService {
 
   async analyzeWithHuggingFace(transcript) {
     try {
-      // Using open-source LLM models like Mistral, Llama, or Falcon
       const prompt = this.getAnalysisPrompt(transcript);
-      
-      // Try multiple open-source models in order of preference
+
       const models = [
         'mistralai/Mistral-7B-Instruct-v0.1',
-        'microsoft/DialoGPT-large',
+        'google/flan-t5-large',
         'facebook/blenderbot-400M-distill'
       ];
-      
+
       for (const model of models) {
         try {
-          const response = await this.client.post(`/models/${model}`, {
-            inputs: prompt,
-            parameters: {
-              max_new_tokens: 1000,
-              temperature: 0.3,
-              return_full_text: false
+          if (this.hfClient && typeof this.hfClient.textGeneration === 'function') {
+            try {
+              const response = await this.hfClient.textGeneration({ model, inputs: prompt, parameters: { max_new_tokens: 1024, temperature: 0.2, top_p: 0.95 } });
+              const generated = response?.generated_text || (Array.isArray(response) && response[0]?.generated_text) || response?.text || (typeof response === 'string' ? response : null);
+              if (generated) return this.parseHuggingFaceAnalysis(generated);
+            } catch (clientErr) {
+              console.warn(`HF client textGeneration for ${model} failed, falling back to HTTP API:`, clientErr.message);
             }
-          });
-
-          if (response.data && response.data[0]?.generated_text) {
-            return this.parseHuggingFaceAnalysis(response.data[0].generated_text);
           }
+
+          const payload = { inputs: prompt, parameters: { max_new_tokens: 1024, temperature: 0.2, top_p: 0.95 }, options: { wait_for_model: true } };
+          const data = await this.hfRequest(model, payload, { headers: { 'Authorization': `Bearer ${process.env.HUGGINGFACE_API_KEY}`, 'Content-Type': 'application/json' }, maxRetries: 4 });
+
+          let generated = null;
+          if (typeof data === 'string') generated = data;
+          else if (Array.isArray(data) && data[0]?.generated_text) generated = data[0].generated_text;
+          else if (data?.generated_text) generated = data.generated_text;
+          else if (data?.text) generated = data.text;
+
+          if (generated) return this.parseHuggingFaceAnalysis(generated);
         } catch (modelError) {
-          console.warn(`Model ${model} failed, trying next...`);
+          console.warn(`Model ${model} failed, trying next...`, modelError?.message || modelError);
           continue;
         }
       }
-      
-      // If all models fail, return structured mock data
-      return this.parseHuggingFaceAnalysis("Analysis completed using open-source LLM");
-      
+
+      return this.parseHuggingFaceAnalysis('Analysis completed using open-source LLM');
     } catch (error) {
       console.warn('HuggingFace analysis failed, using mock data:', error.message);
       return await this.mockAnalysis(transcript);
@@ -232,55 +288,55 @@ class AIService {
   async coachingWithHuggingFace(analysis) {
     try {
       const prompt = this.getCoachingPrompt(analysis);
-      
-      // Use specialized instruction-following models for coaching recommendations
+
       const models = [
         'mistralai/Mistral-7B-Instruct-v0.1',
-        'microsoft/DialoGPT-large',
-        'google/flan-t5-large'
+        'google/flan-t5-large',
+        'mistralai/mistral-small'
       ];
-      
+
       for (const model of models) {
         try {
-          const response = await this.client.post(`/models/${model}`, {
-            inputs: prompt,
-            parameters: {
-              max_new_tokens: 800,
-              temperature: 0.2,
-              do_sample: true,
-              return_full_text: false
+          if (this.hfClient && typeof this.hfClient.textGeneration === 'function') {
+            try {
+              const response = await this.hfClient.textGeneration({ model, inputs: prompt, parameters: { max_new_tokens: 800, temperature: 0.15, top_p: 0.95 } });
+              const generated = response?.generated_text || (Array.isArray(response) && response[0]?.generated_text) || response?.text || (typeof response === 'string' ? response : null);
+              if (generated) return this.parseHuggingFaceCoaching(generated);
+            } catch (clientErr) {
+              console.warn(`HF client textGeneration for ${model} failed, falling back to HTTP API:`, clientErr.message);
             }
-          });
-
-          if (response.data && response.data[0]?.generated_text) {
-            return this.parseHuggingFaceCoaching(response.data[0].generated_text);
           }
+
+          const payload = { inputs: prompt, parameters: { max_new_tokens: 800, temperature: 0.15, top_p: 0.95 }, options: { wait_for_model: true } };
+          const data = await this.hfRequest(model, payload, { headers: { 'Authorization': `Bearer ${process.env.HUGGINGFACE_API_KEY}`, 'Content-Type': 'application/json' }, maxRetries: 4 });
+
+          let generated = null;
+          if (typeof data === 'string') generated = data;
+          else if (Array.isArray(data) && data[0]?.generated_text) generated = data[0].generated_text;
+          else if (data?.generated_text) generated = data.generated_text;
+          else if (data?.text) generated = data.text;
+
+          if (generated) return this.parseHuggingFaceCoaching(generated);
         } catch (modelError) {
-          console.warn(`Coaching model ${model} failed, trying next...`);
+          console.warn(`Coaching model ${model} failed, trying next...`, modelError?.message || modelError);
           continue;
         }
       }
-      
-      // Fallback to structured mock coaching data
-      return this.parseHuggingFaceCoaching("Coaching recommendations generated using open-source AI");
-      
+
+      return this.parseHuggingFaceCoaching('Coaching recommendations generated using open-source AI');
     } catch (error) {
       console.warn('HuggingFace coaching failed, using mock data:', error.message);
       return await this.mockCoaching(analysis);
     }
   }
 
-  // Ollama Implementation (Local models)
-  async transcribeWithOllama(audioPath) {
-    // Note: Ollama primarily handles text models
-    // For audio transcription, you'd need to integrate with whisper.cpp or similar
-    console.log('⚠️  Ollama doesn\'t directly support audio transcription. Using mock data.');
-    return await this.mockTranscription(audioPath);
-  }
+  // async transcribeWithOllama(audioPath) {
+  //   return await this.mockTranscription(audioPath);
+  // }
 
   async analyzeWithOllama(transcript) {
     const prompt = this.getAnalysisPrompt(transcript);
-    
+
     const response = await this.client.post('/api/generate', {
       model: process.env.OLLAMA_MODEL || 'llama2',
       prompt: prompt,
@@ -292,7 +348,7 @@ class AIService {
 
   async coachingWithOllama(analysis) {
     const prompt = this.getCoachingPrompt(analysis);
-    
+
     const response = await this.client.post('/api/generate', {
       model: process.env.OLLAMA_MODEL || 'llama2',
       prompt: prompt,
@@ -305,7 +361,7 @@ class AIService {
   // Mock Implementation for Development
   async mockTranscription(audioPath) {
     await this.simulateDelay(2000);
-    
+
     return {
       text: "Hello, thank you for calling our customer service. I'm Sarah, how can I help you today? Well, I'm having trouble with my recent order. It was supposed to arrive yesterday but I haven't received it yet. I'm sorry to hear about that. Let me look up your order information. Can you please provide me with your order number? Sure, it's ORDER-12345. Thank you. I can see your order here. It looks like there was a delay at our shipping facility, but your package is now out for delivery and should arrive today by 6 PM. That's great news! Is there anything else I can help you with? No, that's all. Thank you for your help. You're welcome! Have a great day!",
       confidence: 0.92,
@@ -315,7 +371,7 @@ class AIService {
 
   async mockAnalysis(transcript) {
     await this.simulateDelay(3000);
-    
+
     return {
       scores: {
         callOpening: {
@@ -370,7 +426,7 @@ class AIService {
 
   async mockCoaching(analysis) {
     await this.simulateDelay(2000);
-    
+
     return {
       personalizedFeedback: {
         summary: "Overall good performance with room for improvement in proactive service delivery.",
@@ -492,12 +548,12 @@ Please provide a JSON response with:
           return this.extractAnalysisFromText(response);
         }
       }
-      
+
       // Handle structured responses from open-source models
       if (response.scores || response.analysis) {
         return { ...response, provider: 'huggingface' };
       }
-      
+
       // Return proper structure matching Analysis model
       return {
         scores: {
@@ -554,19 +610,16 @@ Please provide a JSON response with:
           const parsed = JSON.parse(response);
           if (parsed.personalizedFeedback) return { ...parsed, provider: 'huggingface' };
         } catch (e) {
-          // Extract coaching from text response
           return this.extractCoachingFromText(response);
         }
       }
-      
-      // Handle structured responses
+
       if (response.personalizedFeedback || response.coaching) {
         return { ...response, provider: 'huggingface' };
       }
-      
-      // Generate structured coaching from text response
+
       return this.extractCoachingFromText(response);
-      
+
     } catch (error) {
       console.warn('Error parsing HuggingFace coaching response:', error);
       return this.getDefaultCoaching('huggingface');
@@ -673,11 +726,11 @@ Please provide a JSON response with:
   extractSentiment(text, target) {
     const positiveWords = ['happy', 'satisfied', 'pleased', 'good', 'great', 'excellent'];
     const negativeWords = ['angry', 'frustrated', 'upset', 'bad', 'poor', 'terrible'];
-    
+
     const lowerText = text.toLowerCase();
     const hasPositive = positiveWords.some(word => lowerText.includes(word));
     const hasNegative = negativeWords.some(word => lowerText.includes(word));
-    
+
     if (hasPositive && !hasNegative) return "positive";
     if (hasNegative && !hasPositive) return "negative";
     return "neutral";
@@ -797,29 +850,29 @@ Please provide a JSON response with:
     // Generate coaching based on actual analysis scores and insights
     const scores = analysis.scores;
     const overallScore = analysis.overallScore;
-    
+
     // Determine focus areas based on scores
     const lowScoreAreas = [];
     const highScoreAreas = [];
-    
+
     if (scores.callOpening?.score < 80) lowScoreAreas.push("Call Opening");
     else highScoreAreas.push("Call Opening");
-    
+
     if (scores.issueUnderstanding?.score < 80) lowScoreAreas.push("Issue Understanding");
     else highScoreAreas.push("Issue Understanding");
-    
+
     if (scores.resolutionQuality?.score < 80) lowScoreAreas.push("Resolution Quality");
     else highScoreAreas.push("Resolution Quality");
-    
+
     if (scores.csat?.predictedScore < 4) lowScoreAreas.push("Customer Satisfaction");
     else highScoreAreas.push("Customer Satisfaction");
 
     // Generate personalized feedback
     const feedback = this.generatePersonalizedFeedback(analysis, lowScoreAreas, highScoreAreas);
-    
+
     // Generate resources based on improvement areas
     const resources = this.generateRecommendedResources(lowScoreAreas);
-    
+
     // Generate quiz based on improvement areas
     const quiz = this.generateCoachingQuiz(lowScoreAreas);
 
@@ -834,7 +887,7 @@ Please provide a JSON response with:
   generatePersonalizedFeedback(analysis, lowScoreAreas, highScoreAreas) {
     const overallScore = analysis.overallScore;
     let summary, detailedFeedback;
-    
+
     if (overallScore >= 85) {
       summary = "Excellent performance! You demonstrated strong customer service skills with minor areas for enhancement.";
       detailedFeedback = `Your call achieved an overall score of ${overallScore}%. You excelled in ${highScoreAreas.join(', ')}. Continue building on these strengths while focusing on ${lowScoreAreas.length > 0 ? lowScoreAreas.join(', ') : 'maintaining consistency'}.`;
@@ -856,22 +909,22 @@ Please provide a JSON response with:
 
   generateActionItems(lowScoreAreas, analysis) {
     const items = [];
-    
+
     if (lowScoreAreas.includes("Call Opening")) {
       items.push("Practice professional greetings and clear introduction techniques");
       items.push("Review company greeting standards and personalization methods");
     }
-    
+
     if (lowScoreAreas.includes("Issue Understanding")) {
       items.push("Develop active listening skills and clarifying question techniques");
       items.push("Practice paraphrasing customer concerns to confirm understanding");
     }
-    
+
     if (lowScoreAreas.includes("Resolution Quality")) {
       items.push("Study problem-solving frameworks and solution verification methods");
       items.push("Practice explaining solutions clearly and confirming customer satisfaction");
     }
-    
+
     if (lowScoreAreas.includes("Customer Satisfaction")) {
       items.push("Focus on empathy and emotional intelligence in customer interactions");
       items.push("Learn techniques for managing difficult conversations and expectations");
@@ -880,7 +933,7 @@ Please provide a JSON response with:
     // Add general improvement items
     items.push("Review this call recording to identify specific moments for improvement");
     items.push("Practice scenarios similar to this call type with a colleague or supervisor");
-    
+
     return items;
   }
 
